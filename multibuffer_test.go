@@ -262,3 +262,55 @@ func TestReaderSeek(t *testing.T) {
 	require.Equal(t, data, buf[1024:])
 	require.Equal(t, data, buf[:1024])
 }
+
+// TestZeroByte reads and writes.
+// While they're not particularly useful, it's good to support them.
+// Notably, bugs came up with them in the above randomized testing.
+func TestZeroByte(t *testing.T) {
+	writer, mb := multibuffer.New()
+	reader := mb.Reader()
+
+	// Ensure a zero-byte read succeeds before any writes:
+	requireRead(t, []byte{}, reader)
+
+	// ensure a zero-byte write succeeds:
+	requireWrite(t, []byte{}, writer)
+
+	requireWrite(t, []byte("data"), writer)
+
+	require.NoError(t, writer.Close())
+
+	// A version of this code had a bug where io.EOF was returned for any zero-byte read after closing
+	requireRead(t, []byte{}, reader)
+	requireRead(t, []byte("data"), reader)
+
+	// A zero-byte read should return EOF after closed and all data has been read:
+	n, err := reader.Read([]byte{})
+	require.Zero(t, n)
+	require.Equal(t, io.EOF, err)
+
+	// Writes after close should fail
+	n, err = writer.Write([]byte("abc"))
+	require.Zero(t, n)
+	require.Error(t, err)
+}
+
+// TestShortRead makes sure we properly handle the case where the passed-in buffer is longer than
+// the amount of data available.
+func TestShortRead(t *testing.T) {
+	writer, mb := multibuffer.New()
+	reader := mb.Reader()
+
+	data := randBytes(t, 1000)
+	requireWrite(t, data, writer)
+
+	buf := make([]byte, 2048)
+	n, err := reader.Read(buf)
+	require.NoError(t, err)
+	require.EqualValues(t, 1000, n)
+	require.Equal(t, buf[:n], data)
+
+	// A bit silly, but explicitly test the first bytes are equal to avoid making parallel slicing errors
+	// in the test and the implementation
+	require.Equal(t, buf[0], data[0])
+}

@@ -56,19 +56,16 @@ type writer struct {
 }
 
 func (w *writer) Write(p []byte) (int, error) {
-	// 0 byte writes are handled trivially.
-	// Return early to avoid locking or broadcasting, as there's no new data.
-	if len(p) == 0 {
-		return 0, nil
-	}
-
 	n, err := w.syncWrite(p)
 	if err != nil {
 		return n, err
 	}
 
 	// Notify any waiting readers of new data
-	w.mb.cond.Broadcast()
+	// Don't notify on 0-byte writes since there's no new data to be read.
+	if len(p) != 0 {
+		w.mb.cond.Broadcast()
+	}
 
 	return n, nil
 }
