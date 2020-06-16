@@ -2,11 +2,10 @@ package multibuffer_test
 
 import (
 	"bytes"
-	"crypto/rand"
 	"fmt"
 	"io"
 	"io/ioutil"
-	mathrand "math/rand"
+	"math/rand"
 	"testing"
 
 	"github.com/mcpherrinm/jobs/pkg/multibuffer"
@@ -15,7 +14,7 @@ import (
 
 func randBytes(t *testing.T, count int) []byte {
 	data := make([]byte, count)
-	_, err := rand.Read(data)
+	_, err := rand.Read(data) //nolint: gosec // OK for this to be weak
 	require.NoError(t, err)
 	return data
 }
@@ -106,11 +105,15 @@ func TestInterlacedBlocking(t *testing.T) {
 			go func(reader io.Reader, data []byte, errChan chan error) {
 				buf := make([]byte, len(data))
 				n, err := reader.Read(buf)
-				if n == len(data) && err == nil {
-					errChan <- nil
-				} else {
-					errChan <- fmt.Errorf("unexpected return from Read: %d != %d or %s != nil", n, len(data), err)
+				if n != len(data) {
+					errChan <- fmt.Errorf("unexpected read length: %d != %d", len(data), n)
+					return
 				}
+				if err != nil {
+					errChan <- fmt.Errorf("unexpected error from read: %w", err)
+					return
+				}
+				errChan <- nil
 			}(reader, data, errChan)
 		}
 
@@ -129,11 +132,15 @@ func TestInterlacedBlocking(t *testing.T) {
 		go func(reader io.Reader, errChan chan error) {
 			buf := make([]byte, 1000)
 			n, err := reader.Read(buf)
-			if n == 0 && err == io.EOF {
-				errChan <- nil
-			} else {
-				errChan <- fmt.Errorf("unexpected return from Read: %d != 0 or %s != io.EOF", n, err)
+			if n != 0 {
+				errChan <- fmt.Errorf("expected to read 0 bytes, not %d", n)
+				return
 			}
+			if err != io.EOF {
+				errChan <- fmt.Errorf("unexpected error from read: %w", err)
+				return
+			}
+			errChan <- nil
 		}(reader, errChan)
 	}
 
@@ -151,17 +158,18 @@ func TestInterlacedBlocking(t *testing.T) {
 func TestFuzz(t *testing.T) {
 	mb := multibuffer.New()
 
-	data := randBytes(t, 10000+mathrand.Intn(100000))
+	data := randBytes(t, 10000+rand.Intn(100000))
 
 	errChan := make(chan error)
 
 	go func(writer io.WriteCloser, data []byte, errChan chan error) {
 		for len(data) > 0 {
-			amount := 1 + mathrand.Intn(len(data))
+			amount := 1 + rand.Intn(len(data))
 			n, err := writer.Write(data[:amount])
 			data = data[amount:]
 			if err != nil {
-				panic(err)
+				errChan <- fmt.Errorf("error writing: %w", err)
+				return
 			}
 			if n != amount {
 				errChan <- fmt.Errorf("wrote wrong amount %d != %d", n, amount)
@@ -171,16 +179,16 @@ func TestFuzz(t *testing.T) {
 		errChan <- writer.Close()
 	}(mb, data, errChan)
 
-	readers := mathrand.Intn(100)
+	readers := rand.Intn(100)
 	for i := 0; i < readers; i++ {
 		go func(reader io.ReadSeeker, data []byte, errChan chan error) {
 			gotData := make([]byte, 0, len(data))
 			for {
-				amount := mathrand.Intn(len(data))
+				amount := rand.Intn(len(data))
 				buf := make([]byte, amount)
 				n, err := reader.Read(buf)
 				if err != nil && err != io.EOF {
-					errChan <- err
+					errChan <- fmt.Errorf("error reading: %w", err)
 					return
 				}
 
@@ -189,6 +197,7 @@ func TestFuzz(t *testing.T) {
 				if err == io.EOF {
 					if !bytes.Equal(gotData, data) {
 						errChan <- fmt.Errorf("gotData wasn't expected: %v != %v", gotData, data)
+						return
 					}
 					errChan <- nil
 					return
@@ -198,7 +207,7 @@ func TestFuzz(t *testing.T) {
 		}(mb.Reader(), data, errChan)
 	}
 
-	// One bonus reader:
+	// One final reader, to ensure we can still read all the data
 	gotData, err := ioutil.ReadAll(mb.Reader())
 	require.NoError(t, err)
 	require.Equal(t, data, gotData)
@@ -261,6 +270,17 @@ func TestReaderSeek(t *testing.T) {
 
 	require.Equal(t, data, buf[1024:])
 	require.Equal(t, data, buf[:1024])
+
+	// Error cases:
+	// Unknown whence
+	_, err = reader.Seek(0, 12345)
+	require.Error(t, err)
+	// Negative offset after seeking
+	_, err = reader.Seek(-1, io.SeekStart)
+	require.Error(t, err)
+	// Offset too long
+	_, err = reader.Seek(2049, io.SeekStart)
+	require.Error(t, err)
 }
 
 // TestZeroByte reads and writes.
@@ -309,8 +329,4 @@ func TestShortRead(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1000, n)
 	require.Equal(t, buf[:n], data)
-
-	// A bit silly, but explicitly test the first bytes are equal to avoid making parallel slicing errors
-	// in the test and the implementation
-	require.Equal(t, buf[0], data[0])
 }
