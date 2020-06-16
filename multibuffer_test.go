@@ -47,13 +47,13 @@ func TestWriteCloseRead(t *testing.T) {
 	count := 10000
 	data := randBytes(t, count)
 
-	writer, mb := multibuffer.New()
+	mb := multibuffer.New()
 
 	// Create a reader before and after writing
 	beforeReader := mb.Reader()
 
-	requireWrite(t, data, writer)
-	require.NoError(t, writer.Close())
+	requireWrite(t, data, mb)
+	require.NoError(t, mb.Close())
 
 	afterReader := mb.Reader()
 
@@ -69,12 +69,12 @@ func TestWriteCloseRead(t *testing.T) {
 // TestInterlacedNonblocking does a series of different-sized writes followed by a read of the same size.
 // The readers should be able to follow without blocking.
 func TestInterlacedNonblocking(t *testing.T) {
-	writer, mb := multibuffer.New()
+	mb := multibuffer.New()
 	readers := []io.Reader{mb.Reader(), mb.Reader(), mb.Reader()}
 
 	for i := 0; i < 5000; i++ {
 		data := randBytes(t, i)
-		n, err := writer.Write(data)
+		n, err := mb.Write(data)
 		require.NoError(t, err)
 		require.Equal(t, i, n)
 
@@ -83,7 +83,7 @@ func TestInterlacedNonblocking(t *testing.T) {
 		}
 	}
 
-	require.NoError(t, writer.Close())
+	require.NoError(t, mb.Close())
 	for _, reader := range readers {
 		buf := make([]byte, 100)
 		n, err := reader.Read(buf)
@@ -96,7 +96,7 @@ func TestInterlacedNonblocking(t *testing.T) {
 // Then we wait on all reads to complete.  Finally, we set the readers to read, and Close() the writer,
 // verifying they unblock and get an io.EOF.
 func TestInterlacedBlocking(t *testing.T) {
-	writer, mb := multibuffer.New()
+	mb := multibuffer.New()
 	readers := []io.Reader{mb.Reader(), mb.Reader(), mb.Reader()}
 
 	for i := 0; i < 5000; i++ {
@@ -114,7 +114,7 @@ func TestInterlacedBlocking(t *testing.T) {
 			}(reader, data, errChan)
 		}
 
-		requireWrite(t, data, writer)
+		requireWrite(t, data, mb)
 
 		// Check we got the expected number of responses back after writing
 		for range readers {
@@ -137,7 +137,7 @@ func TestInterlacedBlocking(t *testing.T) {
 		}(reader, errChan)
 	}
 
-	require.NoError(t, writer.Close())
+	require.NoError(t, mb.Close())
 
 	// Check we got the expected number of responses back after closing
 	for range readers {
@@ -149,7 +149,7 @@ func TestInterlacedBlocking(t *testing.T) {
 // TestFuzz launches a series of readers, doing random-sized reads, and a writer, doing random-sized writes.
 // All readers should end up with the same data at the end.
 func TestFuzz(t *testing.T) {
-	writer, mb := multibuffer.New()
+	mb := multibuffer.New()
 
 	data := randBytes(t, 10000+mathrand.Intn(100000))
 
@@ -169,7 +169,7 @@ func TestFuzz(t *testing.T) {
 			}
 		}
 		errChan <- writer.Close()
-	}(writer, data, errChan)
+	}(mb, data, errChan)
 
 	readers := mathrand.Intn(100)
 	for i := 0; i < readers; i++ {
@@ -210,7 +210,7 @@ func TestFuzz(t *testing.T) {
 }
 
 func TestReaderSeek(t *testing.T) {
-	writer, mb := multibuffer.New()
+	mb := multibuffer.New()
 	reader := mb.Reader()
 
 	// No bytes written or read, so no matter whence, a 0 offset seek puts us at 0
@@ -221,7 +221,7 @@ func TestReaderSeek(t *testing.T) {
 	}
 
 	data := randBytes(t, 1024)
-	requireWrite(t, data, writer)
+	requireWrite(t, data, mb)
 
 	// Seek from start to the end
 	requireSeek(t, 1024, io.SeekStart, 1024, reader)
@@ -235,8 +235,8 @@ func TestReaderSeek(t *testing.T) {
 	requireRead(t, data[512:], reader)
 
 	// Append more data and close
-	requireWrite(t, data, writer)
-	require.NoError(t, writer.Close())
+	requireWrite(t, data, mb)
+	require.NoError(t, mb.Close())
 
 	// seek to end
 	end, err := reader.Seek(0, io.SeekEnd)
@@ -267,18 +267,18 @@ func TestReaderSeek(t *testing.T) {
 // While they're not particularly useful, it's good to support them.
 // Notably, bugs came up with them in the above randomized testing.
 func TestZeroByte(t *testing.T) {
-	writer, mb := multibuffer.New()
+	mb := multibuffer.New()
 	reader := mb.Reader()
 
 	// Ensure a zero-byte read succeeds before any writes:
 	requireRead(t, []byte{}, reader)
 
 	// ensure a zero-byte write succeeds:
-	requireWrite(t, []byte{}, writer)
+	requireWrite(t, []byte{}, mb)
 
-	requireWrite(t, []byte("data"), writer)
+	requireWrite(t, []byte("data"), mb)
 
-	require.NoError(t, writer.Close())
+	require.NoError(t, mb.Close())
 
 	// A version of this code had a bug where io.EOF was returned for any zero-byte read after closing
 	requireRead(t, []byte{}, reader)
@@ -290,7 +290,7 @@ func TestZeroByte(t *testing.T) {
 	require.Equal(t, io.EOF, err)
 
 	// Writes after close should fail
-	n, err = writer.Write([]byte("abc"))
+	n, err = mb.Write([]byte("abc"))
 	require.Zero(t, n)
 	require.Error(t, err)
 }
@@ -298,11 +298,11 @@ func TestZeroByte(t *testing.T) {
 // TestShortRead makes sure we properly handle the case where the passed-in buffer is longer than
 // the amount of data available.
 func TestShortRead(t *testing.T) {
-	writer, mb := multibuffer.New()
+	mb := multibuffer.New()
 	reader := mb.Reader()
 
 	data := randBytes(t, 1000)
-	requireWrite(t, data, writer)
+	requireWrite(t, data, mb)
 
 	buf := make([]byte, 2048)
 	n, err := reader.Read(buf)

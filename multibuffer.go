@@ -1,7 +1,4 @@
-// multibuffer is a thread-safe single-writer multiple-reader buffer
-// It provides an io.Writer which writes to an internal buffer.
-// Readers can then read out that data.
-// Access is internally synchronized, so no external synchronization is needed.
+// multibuffer is a package for a single-writer multiple-reader shared data structure.
 package multibuffer
 
 import (
@@ -11,8 +8,8 @@ import (
 	"sync"
 )
 
-// New MultiBuffer returns a writer, and the MultiBuffer that writer writes into.
-func New() (io.WriteCloser, *MultiBuffer) {
+// New returns a MultiBuffer, ready for use.
+func New() *MultiBuffer {
 	mb := &MultiBuffer{}
 
 	// Initialize the condition variable with a read-locker from the rwMutex
@@ -20,18 +17,22 @@ func New() (io.WriteCloser, *MultiBuffer) {
 	// lock.
 	mb.cond = sync.NewCond(mb.rwMutex.RLocker())
 
-	return &writer{mb: mb}, mb
+	return mb
 }
 
-// MultiBuffer wraps a bytes.Buffer with a sync.RWMutex.
-// Data-race safety:  buffer must only be modified when the rwMutex is held for
-// writing, and only read  when held for reading.  In this code, writing is
-// handled by passing the Write directly to the underlying bytes.Buffer, which
-// is done under the write lock.  Reading is done by copying data from the
-// .Bytes() method which exposes a slice from the buffer.  Care must be taken
-// not to keep any references to that slice outside of the read lock, as it
-// will be written to.
+// MultiBuffer is an append-only data store.
+// It implements the io.Writer and io.Closer interfaces, which can be used to add data.
+// Said data is available via one or more io.Reader from the Reader method.
+// MultiBuffer contains a mutex and should not be copied.
 type MultiBuffer struct {
+	// MultiBuffer wraps a bytes.Buffer with a sync.RWMutex.
+	// Data-race safety:  buffer must only be modified when the rwMutex is held for
+	// writing, and only read  when held for reading.  In this code, writing is
+	// handled by passing the Write directly to the underlying bytes.Buffer, which
+	// is done under the write lock.  Reading is done by copying data from the
+	// .Bytes() method which exposes a slice from the buffer.  Care must be taken
+	// not to keep any references to that slice outside of the read lock, as it
+	// will be written to.
 	// rwMutex must be used for any field access in this struct
 	rwMutex sync.RWMutex
 
@@ -51,12 +52,8 @@ type MultiBuffer struct {
 	closed bool
 }
 
-type writer struct {
-	mb *MultiBuffer
-}
-
-func (w *writer) Write(p []byte) (int, error) {
-	n, err := w.syncWrite(p)
+func (mb *MultiBuffer) Write(p []byte) (int, error) {
+	n, err := mb.syncWrite(p)
 	if err != nil {
 		return n, err
 	}
@@ -64,32 +61,34 @@ func (w *writer) Write(p []byte) (int, error) {
 	// Notify any waiting readers of new data
 	// Don't notify on 0-byte writes since there's no new data to be read.
 	if len(p) != 0 {
-		w.mb.cond.Broadcast()
+		mb.cond.Broadcast()
 	}
 
 	return n, nil
 }
 
 // syncWrite locks for writing and writes into the internal buffer
-func (w *writer) syncWrite(p []byte) (int, error) {
-	w.mb.rwMutex.Lock()
-	defer w.mb.rwMutex.Unlock()
+func (mb *MultiBuffer) syncWrite(p []byte) (int, error) {
+	mb.rwMutex.Lock()
+	defer mb.rwMutex.Unlock()
 
-	if w.mb.closed {
+	if mb.closed {
 		return 0, fmt.Errorf("cannot write to already-closed writer")
 	}
 
 	// calling Write on buffer while write-lock is held
-	return w.mb.buffer.Write(p)
+	return mb.buffer.Write(p)
 }
 
-func (w *writer) Close() error {
-	w.mb.rwMutex.Lock()
-	w.mb.closed = true
-	w.mb.rwMutex.Unlock()
+// Close finishes writing.  Readers will get io.EOF once the MultiBuffer is closed and they read all data.
+// No more writes are permitted after close.
+func (mb *MultiBuffer) Close() error {
+	mb.rwMutex.Lock()
+	mb.closed = true
+	mb.rwMutex.Unlock()
 
 	// Notify any waiting readers that we are closed
-	w.mb.cond.Broadcast()
+	mb.cond.Broadcast()
 	return nil
 }
 
