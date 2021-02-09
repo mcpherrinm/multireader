@@ -1,5 +1,5 @@
-// multibuffer is a package for a single-writer multiple-reader shared data structure.
-package multibuffer
+// multireader is a package for a single-writer multiple-reader shared data structure.
+package multireader
 
 import (
 	"bytes"
@@ -8,9 +8,9 @@ import (
 	"sync"
 )
 
-// New returns a MultiBuffer, ready for use.
-func New() *MultiBuffer {
-	mb := &MultiBuffer{}
+// New returns a Buffer, ready for use.
+func New() *Buffer {
+	mb := &Buffer{}
 
 	// Initialize the condition variable with a read-locker from the rwMutex
 	// We need to pass RLocker because the waiters are readers, who hold a read
@@ -20,12 +20,12 @@ func New() *MultiBuffer {
 	return mb
 }
 
-// MultiBuffer is an append-only data store.
+// multireader.Buffer is an append-only data store.
 // It implements the io.Writer and io.Closer interfaces, which can be used to add data.
 // Said data is available via one or more io.Reader from the Reader method.
-// MultiBuffer contains a mutex and should not be copied.
-type MultiBuffer struct {
-	// MultiBuffer wraps a bytes.Buffer with a sync.RWMutex.
+// Buffer contains a mutex and should not be copied.
+type Buffer struct {
+	// Buffer wraps a bytes.Buffer with a sync.RWMutex.
 	// Data-race safety:  buffer must only be modified when the rwMutex is held for
 	// writing, and only read  when held for reading.  In this code, writing is
 	// handled by passing the Write directly to the underlying bytes.Buffer, which
@@ -52,8 +52,8 @@ type MultiBuffer struct {
 	closed bool
 }
 
-func (mb *MultiBuffer) Write(p []byte) (int, error) {
-	n, err := mb.syncWrite(p)
+func (b *Buffer) Write(p []byte) (int, error) {
+	n, err := b.syncWrite(p)
 	if err != nil {
 		return n, err
 	}
@@ -61,54 +61,54 @@ func (mb *MultiBuffer) Write(p []byte) (int, error) {
 	// Notify any waiting readers of new data
 	// Don't notify on 0-byte writes since there's no new data to be read.
 	if len(p) != 0 {
-		mb.cond.Broadcast()
+		b.cond.Broadcast()
 	}
 
 	return n, nil
 }
 
 // syncWrite locks for writing and writes into the internal buffer
-func (mb *MultiBuffer) syncWrite(p []byte) (int, error) {
-	mb.rwMutex.Lock()
-	defer mb.rwMutex.Unlock()
+func (b *Buffer) syncWrite(p []byte) (int, error) {
+	b.rwMutex.Lock()
+	defer b.rwMutex.Unlock()
 
-	if mb.closed {
+	if b.closed {
 		return 0, fmt.Errorf("cannot write to already-closed writer")
 	}
 
 	// calling Write on buffer while write-lock is held
-	return mb.buffer.Write(p)
+	return b.buffer.Write(p)
 }
 
-// Close finishes writing.  Readers will get io.EOF once the MultiBuffer is closed and they read all data.
+// Close finishes writing.  Readers will get io.EOF once the Buffer is closed and they read all data.
 // No more writes are permitted after close.
-func (mb *MultiBuffer) Close() error {
-	mb.rwMutex.Lock()
-	mb.closed = true
-	mb.rwMutex.Unlock()
+func (b *Buffer) Close() error {
+	b.rwMutex.Lock()
+	b.closed = true
+	b.rwMutex.Unlock()
 
 	// Notify any waiting readers that we are closed
-	mb.cond.Broadcast()
+	b.cond.Broadcast()
 	return nil
 }
 
-// Reader provides an io.Reader which reads the data in this MultiBuffer.
+// Reader provides an io.Reader which reads the data in this Buffer.
 // Each individual reader is not thread-safe, but provides thread-safe access
-// to the data in the MultiBuffer.
-func (mb *MultiBuffer) Reader() io.ReadSeeker {
-	return &reader{mb: mb}
+// to the data in the Buffer.
+func (b *Buffer) Reader() io.ReadSeeker {
+	return &reader{mb: b}
 }
 
-func (mb *MultiBuffer) Len() int {
-	mb.rwMutex.RLock()
-	defer mb.rwMutex.RUnlock()
+func (b *Buffer) Len() int {
+	b.rwMutex.RLock()
+	defer b.rwMutex.RUnlock()
 	// accessing buffer length under read lock
-	return mb.buffer.Len()
+	return b.buffer.Len()
 }
 
-// reader is the concrete type returned by MultiBuffer.Reader
+// reader is the concrete type returned by Buffer.Reader
 type reader struct {
-	mb     *MultiBuffer
+	mb     *Buffer
 	offset int
 }
 
@@ -142,7 +142,7 @@ func (r *reader) Seek(offset int64, whence int) (int64, error) {
 	return offset, nil
 }
 
-// Read from the multibuffer.
+// Read from the Buffer.
 func (r *reader) Read(p []byte) (n int, err error) {
 	r.mb.rwMutex.RLock()
 	defer r.mb.rwMutex.RUnlock()
